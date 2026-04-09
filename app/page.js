@@ -173,6 +173,16 @@ export default function SevensAgent() {
   const [showKeys, setShowKeys] = useState({});
   const [keysSaved, setKeysSaved] = useState(false);
 
+  // Transform state
+  const [txPhotoPreview, setTxPhotoPreview] = useState("");
+  const [txLogoPreview, setTxLogoPreview] = useState("");
+  const [txStyle, setTxStyle] = useState(STYLE_PRESETS[0]);
+  const [txCustomPrompt, setTxCustomPrompt] = useState("");
+  const [txStrength, setTxStrength] = useState(0.75);
+  const [txResult, setTxResult] = useState("");
+  const [loadingTx, setLoadingTx] = useState(false);
+  const [txError, setTxError] = useState("");
+
   useEffect(() => {
     try {
       const saved = localStorage.getItem("sevens_keys");
@@ -297,6 +307,59 @@ Retourne UNIQUEMENT le prompt en anglais, directement copiable, sans explication
     setGeneratedImagePrompt("");
   };
 
+  // ── File → base64 ──
+  const fileToBase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
+  // ── Canvas logo overlay ──
+  const overlayLogo = (resultDataUrl, logoDataUrl) => new Promise((resolve) => {
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    const img = new Image();
+    img.onload = () => {
+      canvas.width = img.width;
+      canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+      const logo = new Image();
+      logo.onload = () => {
+        const logoW = Math.round(img.width * 0.18);
+        const logoH = Math.round((logo.height / logo.width) * logoW);
+        const margin = Math.round(img.width * 0.025);
+        ctx.drawImage(logo, img.width - logoW - margin, img.height - logoH - margin, logoW, logoH);
+        resolve(canvas.toDataURL("image/png"));
+      };
+      logo.src = logoDataUrl;
+    };
+    img.src = resultDataUrl;
+  });
+
+  // ── Transform photo ──
+  const transformPhoto = async () => {
+    if (!txPhotoPreview) return;
+    setLoadingTx(true);
+    setTxResult("");
+    setTxError("");
+    const prompt = [txStyle.imagePrompt, txCustomPrompt.trim()].filter(Boolean).join(", ");
+    try {
+      const res = await fetch("/api/transform", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageUrl: txPhotoPreview, prompt, strength: txStrength, apiKey: keys.fal }),
+      });
+      const data = await res.json();
+      if (data.error) { setTxError("❌ " + data.error); }
+      else if (data.imageUrl) {
+        const final = txLogoPreview ? await overlayLogo(data.imageUrl, txLogoPreview) : data.imageUrl;
+        setTxResult(final);
+      }
+    } catch { setTxError("❌ Erreur de connexion."); }
+    setLoadingTx(false);
+  };
+
   // ─── RENDER ───────────────────────────────────────────────
   return (
     <div style={css.page}>
@@ -363,7 +426,7 @@ Retourne UNIQUEMENT le prompt en anglais, directement copiable, sans explication
 
           {/* Nav */}
           <div style={{ display: "flex", flexDirection: "column", gap: "5px", marginTop: "8px" }}>
-            {[{ id: "content", label: "✍️ Contenu texte" }, { id: "image", label: "🎨 Génération images" }].map(t => (
+            {[{ id: "content", label: "✍️ Contenu texte" }, { id: "image", label: "🎨 Génération images" }, { id: "transform", label: "🖼️ Transformer photo" }].map(t => (
               <button key={t.id} onClick={() => setTab(t.id)} style={{
                 padding: "10px 12px", borderRadius: "8px", border: "none", textAlign: "left", cursor: "pointer", fontFamily: "'DM Sans', sans-serif", fontSize: "13px",
                 background: tab === t.id ? "rgba(201,169,110,0.15)" : "transparent",
@@ -532,6 +595,118 @@ Retourne UNIQUEMENT le prompt en anglais, directement copiable, sans explication
                     <a href={imageUrl} download="sevens-image.png" target="_blank" rel="noreferrer" style={{ ...css.ghost, textDecoration: "none", fontSize: "11px" }}>⬇️ Télécharger</a>
                   </div>
                   <img src={imageUrl} alt="Generated" style={{ width: "100%", borderRadius: "10px", border: "1px solid rgba(201,169,110,0.2)" }} />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── TRANSFORM TAB ── */}
+          {tab === "transform" && (
+            <div>
+              <h2 style={{ margin: "0 0 20px", fontSize: "17px", fontWeight: "600", color: "#C9A96E" }}>🖼️ Transformer une photo</h2>
+
+              {/* Upload photo */}
+              <div style={css.section}>
+                <label style={css.label}>Photo originale de la maison *</label>
+                <label style={{
+                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                  border: "2px dashed rgba(201,169,110,0.35)", borderRadius: "10px", padding: "20px",
+                  cursor: "pointer", background: "rgba(255,255,255,0.02)", gap: "8px",
+                }}>
+                  {txPhotoPreview
+                    ? <img src={txPhotoPreview} alt="preview" style={{ maxHeight: "160px", borderRadius: "8px", maxWidth: "100%" }} />
+                    : <><span style={{ fontSize: "28px" }}>📷</span><span style={{ fontSize: "12px", color: "rgba(232,228,220,0.45)" }}>Clique pour uploader (JPG / PNG)</span></>
+                  }
+                  <input type="file" accept="image/jpeg,image/png" style={{ display: "none" }}
+                    onChange={async (e) => {
+                      const f = e.target.files?.[0];
+                      if (f) setTxPhotoPreview(await fileToBase64(f));
+                    }} />
+                </label>
+              </div>
+
+              {/* Upload logo */}
+              <div style={css.section}>
+                <label style={css.label}>Logo Sevens (optionnel — PNG transparent)</label>
+                <label style={{
+                  display: "flex", alignItems: "center", gap: "12px",
+                  border: "1px dashed rgba(201,169,110,0.2)", borderRadius: "10px", padding: "12px 16px",
+                  cursor: "pointer", background: "rgba(255,255,255,0.02)",
+                }}>
+                  {txLogoPreview
+                    ? <><img src={txLogoPreview} alt="logo" style={{ height: "36px", borderRadius: "4px" }} /><span style={{ fontSize: "12px", color: "#C9A96E" }}>Logo chargé ✓</span></>
+                    : <><span style={{ fontSize: "20px" }}>🏷️</span><span style={{ fontSize: "12px", color: "rgba(232,228,220,0.4)" }}>Uploader le logo (sera placé en bas à droite)</span></>
+                  }
+                  <input type="file" accept="image/png" style={{ display: "none" }}
+                    onChange={async (e) => {
+                      const f = e.target.files?.[0];
+                      if (f) setTxLogoPreview(await fileToBase64(f));
+                    }} />
+                </label>
+                {txLogoPreview && (
+                  <button onClick={() => setTxLogoPreview("")} style={{ ...css.ghost, marginTop: "6px", fontSize: "11px" }}>✕ Retirer le logo</button>
+                )}
+              </div>
+
+              {/* Style selector */}
+              <div style={css.section}>
+                <label style={css.label}>Style de transformation</label>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                  {STYLE_PRESETS.map(s => (
+                    <button key={s.id} onClick={() => setTxStyle(s)} style={{
+                      padding: "10px 12px", borderRadius: "8px", textAlign: "left", cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+                      border: txStyle.id === s.id ? "1.5px solid #C9A96E" : "1px solid rgba(255,255,255,0.07)",
+                      background: txStyle.id === s.id ? "rgba(201,169,110,0.1)" : "rgba(255,255,255,0.03)",
+                      color: "#e8e4dc",
+                    }}>
+                      <span style={{ marginRight: "7px" }}>{s.emoji}</span>
+                      <span style={{ fontSize: "12px", fontWeight: "500" }}>{s.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Custom prompt */}
+              <div style={css.section}>
+                <label style={css.label}>Prompt custom (optionnel — s'ajoute au style)</label>
+                <textarea value={txCustomPrompt} onChange={e => setTxCustomPrompt(e.target.value)}
+                  placeholder="Ex: avec une piscine à débordement, lumière dorée du coucher de soleil..."
+                  style={{ ...css.textarea, height: "65px" }} />
+              </div>
+
+              {/* Strength */}
+              <div style={css.section}>
+                <label style={css.label}>Intensité de transformation — {Math.round(txStrength * 100)}%</label>
+                <input type="range" min="0.3" max="0.95" step="0.05" value={txStrength}
+                  onChange={e => setTxStrength(parseFloat(e.target.value))}
+                  style={{ width: "100%", accentColor: "#C9A96E", cursor: "pointer" }} />
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "10px", color: "rgba(232,228,220,0.35)", marginTop: "3px" }}>
+                  <span>Fidèle à l'original</span><span>Très transformé</span>
+                </div>
+              </div>
+
+              {/* Button */}
+              <button onClick={transformPhoto} disabled={loadingTx || !txPhotoPreview}
+                style={{ ...css.btn, ...(loadingTx || !txPhotoPreview ? css.btnDisabled : {}), marginBottom: "16px" }}>
+                {loadingTx ? "✨ Transformation en cours..." : "🖼️ Transformer la photo"}
+              </button>
+
+              {txError && (
+                <div style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", padding: "12px 14px", fontSize: "13px", color: "rgba(232,228,220,0.7)", marginBottom: "12px" }}>
+                  {txError}
+                </div>
+              )}
+
+              {txResult && (
+                <div style={{ marginTop: "4px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
+                    <span style={{ fontSize: "11px", letterSpacing: "0.1em", textTransform: "uppercase", color: "#C9A96E", fontWeight: "500" }}>
+                      Photo transformée — {txStyle.label}
+                    </span>
+                    <a href={txResult} download="sevens-transform.png"
+                      style={{ ...css.ghost, textDecoration: "none", fontSize: "11px" }}>⬇️ Télécharger</a>
+                  </div>
+                  <img src={txResult} alt="Résultat" style={{ width: "100%", borderRadius: "10px", border: "1px solid rgba(201,169,110,0.2)" }} />
                 </div>
               )}
             </div>
